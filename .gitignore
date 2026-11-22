@@ -1,0 +1,30 @@
+# ملفات البناء والمخرجات المؤقتة
+*.apk
+*.aab
+*.ap_
+*.aab_
+*.dex
+*.class
+bin/
+gen/
+out/
+build/
+.gradle/
+
+# إعدادات بيئة التطوير المحلية (Android Studio / IntelliJ)
+*.iml
+.idea/
+local.properties
+.navigation/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# ملفات متغيرات البيئة والأسرار المحلية
+.env
+*.keystore
+*.jks
+
+# ملفات نظام التشغيل
+.DS_Store
+Thumbs.db
