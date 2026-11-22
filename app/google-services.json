@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "34911347333",
+    "project_id": "shomali-markit",
+    "storage_bucket": "shomali-markit.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:34911347333:android:b1b520b1baf0a8b76bffec",
+        "android_client_info": {
+          "package_name": "com.localmarket.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAz-1lle2U0-WA0Jp-VPb0z0LcypdaShN4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
