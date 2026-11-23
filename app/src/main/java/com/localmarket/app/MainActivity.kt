@@ -77,6 +77,8 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
+import java.text.NumberFormat
+import java.util.Locale
 
 data class MarketCategory(
     val id: String,
@@ -104,6 +106,13 @@ private fun formatIraqiWhatsAppNumber(rawPhone: String): String {
         digitsOnly.isNotEmpty() -> "964$digitsOnly"
         else -> ""
     }
+}
+
+private fun formatIqdPrice(rawPrice: String): String {
+    val digitsOnly = rawPrice.filter { it.isDigit() }
+    val amount = digitsOnly.toLongOrNull() ?: return rawPrice.trim()
+    val formatter = NumberFormat.getNumberInstance(Locale.US)
+    return formatter.format(amount)
 }
 
 class MainActivity : ComponentActivity() {
@@ -389,6 +398,8 @@ fun BuyerScreen(
                     modifier = Modifier.fillMaxSize()
                 ) {
                     items(products, key = { it.id }) { product ->
+                        val formattedPrice = formatIqdPrice(product.priceIqd)
+
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
@@ -424,7 +435,7 @@ fun BuyerScreen(
                                 Spacer(modifier = Modifier.height(4.dp))
 
                                 Text(
-                                    text = "السعر: ${product.priceIqd} د.ع",
+                                    text = "السعر: $formattedPrice د.ع",
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.SemiBold
                                 )
@@ -478,7 +489,7 @@ fun BuyerScreen(
                                                     Toast.makeText(context, "رقم الهاتف غير صالح لواتساب", Toast.LENGTH_SHORT).show()
                                                     return@Button
                                                 }
-                                                val message = Uri.encode("مرحبًا، أستفسر عن منتج: ${product.title} (${product.priceIqd} د.ع)")
+                                                val message = Uri.encode("مرحبًا، أستفسر عن منتج: ${product.title} ($formattedPrice د.ع)")
                                                 val waIntent = Intent(
                                                     Intent.ACTION_VIEW,
                                                     Uri.parse("https://wa.me/$waNumber?text=$message")
