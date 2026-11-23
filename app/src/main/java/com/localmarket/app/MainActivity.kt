@@ -28,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AddBusiness
 import androidx.compose.material.icons.rounded.Apps
 import androidx.compose.material.icons.rounded.Call
+import androidx.compose.material.icons.rounded.Category
 import androidx.compose.material.icons.rounded.Chair
 import androidx.compose.material.icons.rounded.Chat
 import androidx.compose.material.icons.rounded.CheckCircle
@@ -36,8 +37,10 @@ import androidx.compose.material.icons.rounded.ChildCare
 import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.DirectionsCar
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Kitchen
 import androidx.compose.material.icons.rounded.LocationOn
+import androidx.compose.material.icons.rounded.Phone
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Storefront
 import androidx.compose.material3.Button
@@ -50,6 +53,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
@@ -58,6 +62,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -276,6 +281,7 @@ fun LocalMarketApp() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BuyerScreen(
     modifier: Modifier = Modifier,
@@ -289,6 +295,31 @@ fun BuyerScreen(
     errorMessage: String?
 ) {
     val context = LocalContext.current
+    var selectedProduct by remember { mutableStateOf<MarketProduct?>(null) }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    fun launchDialer(phone: String) {
+        val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$phone"))
+        context.startActivity(dialIntent)
+    }
+
+    fun launchWhatsApp(product: MarketProduct, formattedPrice: String) {
+        val waNumber = formatIraqiWhatsAppNumber(product.phone)
+        if (waNumber.isBlank()) {
+            Toast.makeText(context, "رقم الهاتف غير صالح لواتساب", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val message = Uri.encode("مرحبًا، أستفسر عن منتج: ${product.title} ($formattedPrice د.ع)")
+        val waIntent = Intent(
+            Intent.ACTION_VIEW,
+            Uri.parse("https://wa.me/$waNumber?text=$message")
+        )
+        try {
+            context.startActivity(waIntent)
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(context, "تعذر فتح واتساب على الجهاز", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     Column(
         modifier = modifier.fillMaxSize()
@@ -401,6 +432,7 @@ fun BuyerScreen(
                         val formattedPrice = formatIqdPrice(product.priceIqd)
 
                         Card(
+                            onClick = { selectedProduct = product },
                             modifier = Modifier.fillMaxWidth(),
                             elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                         ) {
@@ -418,282 +450,6 @@ fun BuyerScreen(
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = "${product.listingType} • ${product.condition}",
+                                        text = "${product.listingType} •${product.condition}",
                                         style = MaterialTheme.typography.labelLarge,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                }
-
-                                Spacer(modifier = Modifier.height(6.dp))
-
-                                Text(
-                                    text = "القسم: ${product.category}",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-
-                                Spacer(modifier = Modifier.height(4.dp))
-
-                                Text(
-                                    text = "السعر: $formattedPrice د.ع",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-
-                                Spacer(modifier = Modifier.height(6.dp))
-
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.LocationOn,
-                                        contentDescription = "الموقع",
-                                        modifier = Modifier.size(16.dp),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = product.location,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-
-                                if (product.phone.isNotBlank()) {
-                                    Spacer(modifier = Modifier.height(10.dp))
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        OutlinedButton(
-                                            onClick = {
-                                                val dialIntent = Intent(
-                                                    Intent.ACTION_DIAL,
-                                                    Uri.parse("tel:${product.phone}")
-                                                )
-                                                context.startActivity(dialIntent)
-                                            },
-                                            modifier = Modifier.weight(1f)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.Call,
-                                                contentDescription = "اتصال بالبائع",
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text("اتصال")
-                                        }
-
-                                        Button(
-                                            onClick = {
-                                                val waNumber = formatIraqiWhatsAppNumber(product.phone)
-                                                if (waNumber.isBlank()) {
-                                                    Toast.makeText(context, "رقم الهاتف غير صالح لواتساب", Toast.LENGTH_SHORT).show()
-                                                    return@Button
-                                                }
-                                                val message = Uri.encode("مرحبًا، أستفسر عن منتج: ${product.title} ($formattedPrice د.ع)")
-                                                val waIntent = Intent(
-                                                    Intent.ACTION_VIEW,
-                                                    Uri.parse("https://wa.me/$waNumber?text=$message")
-                                                )
-                                                try {
-                                                    context.startActivity(waIntent)
-                                                } catch (_: ActivityNotFoundException) {
-                                                    Toast.makeText(context, "تعذر فتح واتساب على الجهاز", Toast.LENGTH_SHORT).show()
-                                                }
-                                            },
-                                            modifier = Modifier.weight(1f)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.Chat,
-                                                contentDescription = "واتساب",
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text("واتساب")
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun SellerScreen(
-    modifier: Modifier = Modifier,
-    categories: List<MarketCategory>,
-    onPublishProduct: (MarketProduct, (Boolean, String?) -> Unit) -> Unit
-) {
-    var title by remember { mutableStateOf("") }
-    var selectedCategory by remember { mutableStateOf(categories.firstOrNull()?.title ?: "إلكترونيات") }
-    var listingType by remember { mutableStateOf("بيع") }
-    var condition by remember { mutableStateOf("جديد") }
-    var priceIqd by remember { mutableStateOf("") }
-    var location by remember { mutableStateOf("") }
-    var phone by remember { mutableStateOf("") }
-
-    var isSubmitting by remember { mutableStateOf(false) }
-    var statusMessage by remember { mutableStateOf<String?>(null) }
-    var isError by remember { mutableStateOf(false) }
-
-    val listingTypes = listOf("بيع", "إيجار", "مقايضة")
-    val conditions = listOf("جديد", "مستعمل")
-
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Text(
-            text = "نشر منتج جديد في السوق المحلي",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold
-        )
-
-        OutlinedTextField(
-            value = title,
-            onValueChange = { title = it },
-            label = { Text("عنوان المنتج") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        Text(text = "اختر القسم", style = MaterialTheme.typography.labelLarge)
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(categories, key = { it.id }) { cat ->
-                FilterChip(
-                    selected = selectedCategory == cat.title,
-                    onClick = { selectedCategory = cat.title },
-                    label = { Text(cat.title) }
-                )
-            }
-        }
-
-        Text(text = "نوع العرض", style = MaterialTheme.typography.labelLarge)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listingTypes.forEach { type ->
-                FilterChip(
-                    selected = listingType == type,
-                    onClick = { listingType = type },
-                    label = { Text(type) }
-                )
-            }
-        }
-
-        Text(text = "حالة المنتج", style = MaterialTheme.typography.labelLarge)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            conditions.forEach { cond ->
-                FilterChip(
-                    selected = condition == cond,
-                    onClick = { condition = cond },
-                    label = { Text(cond) }
-                )
-            }
-        }
-
-        OutlinedTextField(
-            value = priceIqd,
-            onValueChange = { input -> priceIqd = input.filter { it.isDigit() } },
-            label = { Text("السعر بالدينار العراقي (د.ع)") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        OutlinedTextField(
-            value = location,
-            onValueChange = { location = it },
-            label = { Text("المنطقة / الحي") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        OutlinedTextField(
-            value = phone,
-            onValueChange = { input -> phone = input.filter { it.isDigit() || it == '+' } },
-            label = { Text("رقم هاتف التواصل") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        if (statusMessage != null) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                if (!isError) {
-                    Icon(
-                        imageVector = Icons.Rounded.CheckCircle,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-                Text(
-                    text = statusMessage!!,
-                    color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            }
-        }
-
-        Button(
-            onClick = {
-                if (title.isBlank() || priceIqd.isBlank() || location.isBlank() || phone.isBlank()) {
-                    isError = true
-                    statusMessage = "يرجى ملء جميع الحقول المطلوبة (العنوان، السعر، المنطقة، الهاتف)."
-                    return@Button
-                }
-
-                isSubmitting = true
-                isError = false
-                statusMessage = null
-
-                val product = MarketProduct(
-                    title = title.trim(),
-                    category = selectedCategory,
-                    listingType = listingType,
-                    condition = condition,
-                    priceIqd = priceIqd.trim(),
-                    location = location.trim(),
-                    phone = phone.trim()
-                )
-
-                onPublishProduct(product) { success, err ->
-                    isSubmitting = false
-                    if (success) {
-                        title = ""
-                        priceIqd = ""
-                        location = ""
-                        phone = ""
-                        statusMessage = "تم نشر المنتج بنجاح!"
-                        isError = false
-                    } else {
-                        statusMessage = err ?: "حدث خطأ أثناء النشر."
-                        isError = true
-                    }
-                }
-            },
-            enabled = !isSubmitting,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(50.dp)
-        ) {
-            if (isSubmitting) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(22.dp),
-                    strokeWidth = 2.dp,
-                    color = MaterialTheme.colorScheme.onPrimary
-                )
-            } else {
-                Text("نشر المنتج في السوق")
-            }
-        }
-    }
-}
+                                        color = Material
