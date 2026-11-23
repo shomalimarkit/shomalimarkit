@@ -15,6 +15,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -91,6 +92,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -99,7 +101,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
 import kotlinx.coroutines.Dispatchers
@@ -148,6 +149,46 @@ private fun formatIqdPrice(rawPrice: String): String {
     return formatter.format(amount)
 }
 
+private fun decodeUriToBitmap(context: Context, uri: Uri, maxDimension: Int = 800): Bitmap? {
+    return try {
+        val boundsOptions = BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            BitmapFactory.decodeStream(input, null, boundsOptions)
+        }
+        val width = boundsOptions.outWidth
+        val height = boundsOptions.outHeight
+        if (width <= 0 || height <= 0) return null
+
+        var sampleSize = 1
+        while (max(width / sampleSize, height / sampleSize) > maxDimension * 2) {
+            sampleSize *= 2
+        }
+
+        val decodeOptions = BitmapFactory.Options().apply {
+            inSampleSize = sampleSize
+        }
+        val rawBitmap = context.contentResolver.openInputStream(uri)?.use { input ->
+            BitmapFactory.decodeStream(input, null, decodeOptions)
+        } ?: return null
+
+        val longestSide = max(rawBitmap.width, rawBitmap.height)
+        if (longestSide > maxDimension) {
+            val scaleRatio = maxDimension.toFloat() / longestSide.toFloat()
+            val targetWidth = (rawBitmap.width * scaleRatio).toInt().coerceAtLeast(1)
+            val targetHeight = (rawBitmap.height * scaleRatio).toInt().coerceAtLeast(1)
+            val scaled = Bitmap.createScaledBitmap(rawBitmap, targetWidth, targetHeight, true)
+            if (scaled !== rawBitmap) rawBitmap.recycle()
+            scaled
+        } else {
+            rawBitmap
+        }
+    } catch (_: Exception) {
+        null
+    }
+}
+
 private fun decodeBase64ToBitmap(base64String: String): Bitmap? {
     if (base64String.isBlank()) return null
     return try {
@@ -170,55 +211,19 @@ private suspend fun compressImageToBase64(
     initialQuality: Int = 70
 ): Result<String> = withContext(Dispatchers.IO) {
     try {
-        val boundsOptions = BitmapFactory.Options().apply {
-            inJustDecodeBounds = true
-        }
-        context.contentResolver.openInputStream(imageUri)?.use { input ->
-            BitmapFactory.decodeStream(input, null, boundsOptions)
-        }
-
-        val width = boundsOptions.outWidth
-        val height = boundsOptions.outHeight
-        if (width <= 0 || height <= 0) {
-            return@withContext Result.failure(IllegalStateException("تعذر قراءة أبعاد الصورة المختارة."))
-        }
-
-        var sampleSize = 1
-        while (max(width / sampleSize, height / sampleSize) > maxDimension * 2) {
-            sampleSize *= 2
-        }
-
-        val decodeOptions = BitmapFactory.Options().apply {
-            inSampleSize = sampleSize
-        }
-        val rawBitmap = context.contentResolver.openInputStream(imageUri)?.use { input ->
-            BitmapFactory.decodeStream(input, null, decodeOptions)
-        } ?: return@withContext Result.failure(IllegalStateException("تعذر فك تشفير الصورة."))
-
-        val longestSide = max(rawBitmap.width, rawBitmap.height)
-        val scaledBitmap = if (longestSide > maxDimension) {
-            val scaleRatio = maxDimension.toFloat() / longestSide.toFloat()
-            val targetWidth = (rawBitmap.width * scaleRatio).toInt().coerceAtLeast(1)
-            val targetHeight = (rawBitmap.height * scaleRatio).toInt().coerceAtLeast(1)
-            Bitmap.createScaledBitmap(rawBitmap, targetWidth, targetHeight, true)
-        } else {
-            rawBitmap
-        }
+        val scaledBitmap = decodeUriToBitmap(context, imageUri, maxDimension)
+            ?: return@withContext Result.failure(IllegalStateException("تعذر قراءة الصورة المختارة."))
 
         var quality = initialQuality
         var outputStream = ByteArrayOutputStream()
         scaledBitmap.compress(Bitmap.CompressFormat.JPEG, quality, outputStream)
 
-        // ضمان عدم تجاوز حجم النص المسموح في مستند Firestore (~350 KB للبيانات النصية)
         while (outputStream.size() > 350_000 && quality > 25) {
             quality -= 10
             outputStream = ByteArrayOutputStream()
             scaledBitmap.compress(Bitmap.CompressFormat.JPEG, quality, outputStream)
         }
 
-        if (scaledBitmap !== rawBitmap) {
-            rawBitmap.recycle()
-        }
         scaledBitmap.recycle()
 
         val bytes = outputStream.toByteArray()
@@ -240,25 +245,10 @@ fun ProductImageView(
     modifier: Modifier = Modifier
 ) {
     if (imageData.isBlank()) return
-
-    val bitmap = remember(imageData) {
-        if (imageData.startsWith("http://") || imageData.startsWith("https://")) {
-            null
-        } else {
-            decodeBase64ToBitmap(imageData)
-        }
-    }
-
-    if (imageData.startsWith("http://") || imageData.startsWith("https://")) {
-        AsyncImage(
-            model = imageData,
-            contentDescription = contentDescription,
-            contentScale = ContentScale.Crop,
-            modifier = modifier
-        )
-    } else if (bitmap != null) {
-        AsyncImage(
-            model = bitmap,
+    val bitmap = remember(imageData) { decodeBase64ToBitmap(imageData) }
+    if (bitmap != null) {
+        Image(
+            bitmap = bitmap.asImageBitmap(),
             contentDescription = contentDescription,
             contentScale = ContentScale.Crop,
             modifier = modifier
@@ -325,9 +315,7 @@ fun LocalMarketApp() {
                 if (snapshot != null) {
                     products.clear()
                     for (doc in snapshot.documents) {
-                        val storedImage = doc.getString("imageData")
-                            ?: doc.getString("imageUrl")
-                            ?: ""
+                        val storedImage = doc.getString("imageData") ?: ""
 
                         val item = MarketProduct(
                             id = doc.id,
@@ -1031,6 +1019,7 @@ fun SellerScreen(
     onToggleStatus: (MarketProduct) -> Unit,
     onDeleteProduct: (MarketProduct) -> Unit
 ) {
+    val context = LocalContext.current
     var title by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf(categories.firstOrNull()?.title ?: "إلكترونيات") }
     var listingType by remember { mutableStateOf("بيع") }
@@ -1052,6 +1041,10 @@ fun SellerScreen(
         if (uri != null) {
             selectedImageUri = uri
         }
+    }
+
+    val previewBitmap = remember(selectedImageUri) {
+        selectedImageUri?.let { uri -> decodeUriToBitmap(context, uri, maxDimension = 800) }
     }
 
     val listingTypes = listOf("بيع", "إيجار", "مقايضة")
@@ -1096,9 +1089,9 @@ fun SellerScreen(
 
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (selectedImageUri != null) {
-                    AsyncImage(
-                        model = selectedImageUri,
+                if (previewBitmap != null) {
+                    Image(
+                        bitmap = previewBitmap.asImageBitmap(),
                         contentDescription = "معاينة صورة المنتج",
                         contentScale = ContentScale.Crop,
                         modifier = Modifier
