@@ -49,9 +49,11 @@ import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.DirectionsCar
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Kitchen
 import androidx.compose.material.icons.rounded.LocationOn
+import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Phone
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Sell
@@ -83,6 +85,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -109,12 +112,20 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.text.NumberFormat
 import java.util.Locale
+import java.util.UUID
 import kotlin.math.max
 
 data class MarketCategory(
     val id: String,
     val title: String,
     val icon: ImageVector
+)
+
+data class UserProfile(
+    val accountId: String = "",
+    val name: String = "",
+    val phone: String = "",
+    val address: String = ""
 )
 
 data class MarketProduct(
@@ -126,11 +137,64 @@ data class MarketProduct(
     val priceIqd: String = "",
     val location: String = "",
     val phone: String = "",
+    val ownerAccountId: String = "",
+    val ownerName: String = "",
     val description: String = "",
     val imageData: String = "",
     val status: String = "متاح",
     val createdAt: Long = System.currentTimeMillis()
 )
+
+private const val PREFS_NAME = "local_market_account_prefs"
+private const val KEY_ACCOUNT_ID = "account_id"
+private const val KEY_USER_NAME = "user_name"
+private const val KEY_USER_PHONE = "user_phone"
+private const val KEY_USER_ADDRESS = "user_address"
+
+private fun loadSavedUserProfile(context: Context): UserProfile? {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    val name = prefs.getString(KEY_USER_NAME, "").orEmpty().trim()
+    val phone = prefs.getString(KEY_USER_PHONE, "").orEmpty().trim()
+    val address = prefs.getString(KEY_USER_ADDRESS, "").orEmpty().trim()
+    if (name.isBlank() || phone.isBlank() || address.isBlank()) return null
+
+    var accountId = prefs.getString(KEY_ACCOUNT_ID, "").orEmpty().trim()
+    if (accountId.isBlank()) {
+        accountId = UUID.randomUUID().toString()
+        prefs.edit().putString(KEY_ACCOUNT_ID, accountId).apply()
+    }
+    return UserProfile(
+        accountId = accountId,
+        name = name,
+        phone = phone,
+        address = address
+    )
+}
+
+private fun saveUserProfileLocally(context: Context, name: String, phone: String, address: String): UserProfile {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    var accountId = prefs.getString(KEY_ACCOUNT_ID, "").orEmpty().trim()
+    if (accountId.isBlank()) {
+        accountId = UUID.randomUUID().toString()
+    }
+    val cleanName = name.trim()
+    val cleanPhone = phone.trim()
+    val cleanAddress = address.trim()
+
+    prefs.edit()
+        .putString(KEY_ACCOUNT_ID, accountId)
+        .putString(KEY_USER_NAME, cleanName)
+        .putString(KEY_USER_PHONE, cleanPhone)
+        .putString(KEY_USER_ADDRESS, cleanAddress)
+        .apply()
+
+    return UserProfile(
+        accountId = accountId,
+        name = cleanName,
+        phone = cleanPhone,
+        address = cleanAddress
+    )
+}
 
 private fun formatIraqiWhatsAppNumber(rawPhone: String): String {
     val digitsOnly = rawPhone.filter { it.isDigit() }
@@ -280,6 +344,10 @@ fun LocalMarketApp() {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val db = remember { FirebaseFirestore.getInstance() }
+
+    var userProfile by remember { mutableStateOf(loadSavedUserProfile(context)) }
+    var showAccountDialog by remember { mutableStateOf(userProfile == null) }
+
     val products = remember { mutableStateListOf<MarketProduct>() }
     var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -326,6 +394,8 @@ fun LocalMarketApp() {
                             priceIqd = doc.getString("priceIqd") ?: "",
                             location = doc.getString("location") ?: "",
                             phone = doc.getString("phone") ?: "",
+                            ownerAccountId = doc.getString("ownerAccountId") ?: "",
+                            ownerName = doc.getString("ownerName") ?: "",
                             description = doc.getString("description") ?: "",
                             imageData = storedImage,
                             status = doc.getString("status") ?: "متاح",
@@ -353,6 +423,7 @@ fun LocalMarketApp() {
         val matchesSearch = normalizedQuery.isEmpty() ||
             product.title.lowercase().contains(normalizedQuery) ||
             product.location.lowercase().contains(normalizedQuery) ||
+            product.ownerName.lowercase().contains(normalizedQuery) ||
             product.category.lowercase().contains(normalizedQuery) ||
             product.listingType.lowercase().contains(normalizedQuery) ||
             product.condition.lowercase().contains(normalizedQuery) ||
@@ -361,15 +432,41 @@ fun LocalMarketApp() {
         matchesCategory && matchesListingType && matchesCondition && matchesSearch
     }
 
+    fun persistAccount(name: String, phone: String, address: String) {
+        val savedProfile = saveUserProfileLocally(context, name, phone, address)
+        userProfile = savedProfile
+        showAccountDialog = false
+
+        val userDoc = hashMapOf(
+            "accountId" to savedProfile.accountId,
+            "name" to savedProfile.name,
+            "phone" to savedProfile.phone,
+            "address" to savedProfile.address,
+            "updatedAt" to System.currentTimeMillis()
+        )
+        db.collection("users")
+            .document(savedProfile.accountId)
+            .set(userDoc)
+            .addOnSuccessListener {
+                Toast.makeText(context, "تم حفظ بيانات الحساب بنجاح", Toast.LENGTH_SHORT).show()
+            }
+            .addOnFailureListener {
+                Toast.makeText(context, "تم حفظ الحساب على الجهاز", Toast.LENGTH_SHORT).show()
+            }
+    }
+
     fun saveProductDocument(product: MarketProduct, onComplete: (Boolean, String?) -> Unit) {
+        val activeProfile = userProfile
         val data = hashMapOf(
             "title" to product.title,
             "category" to product.category,
             "listingType" to product.listingType,
             "condition" to product.condition,
             "priceIqd" to product.priceIqd,
-            "location" to product.location,
-            "phone" to product.phone,
+            "location" to product.location.ifBlank { activeProfile?.address.orEmpty() },
+            "phone" to product.phone.ifBlank { activeProfile?.phone.orEmpty() },
+            "ownerAccountId" to (activeProfile?.accountId ?: product.ownerAccountId),
+            "ownerName" to (activeProfile?.name ?: product.ownerName),
             "description" to product.description,
             "imageData" to product.imageData,
             "status" to product.status,
@@ -391,10 +488,26 @@ fun LocalMarketApp() {
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        text = if (selectedTab == 0) "السوق المحلي - تصفح المنتجات" else "السوق المحلي - إدارة ونشر المنتجات",
-                        fontWeight = FontWeight.Bold
-                    )
+                    Column {
+                        Text(
+                            text = if (selectedTab == 0) "السوق المحلي - تصفح المنتجات" else "السوق المحلي - إدارة ونشر المنتجات",
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = userProfile?.let { "${it.name} • ${it.phone} • ${it.address}" }
+                                ?: "سجّل حسابك (الاسم، الهاتف، العنوان)",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { showAccountDialog = true }) {
+                        Icon(
+                            imageVector = if (userProfile == null) Icons.Rounded.Person else Icons.Rounded.Edit,
+                            contentDescription = "بيانات الحساب"
+                        )
+                    }
                 }
             )
         },
@@ -441,6 +554,8 @@ fun LocalMarketApp() {
             1 -> SellerScreen(
                 modifier = Modifier.padding(innerPadding),
                 categories = categories.filter { it.title != "الكل" },
+                userProfile = userProfile,
+                onOpenAccountForm = { showAccountDialog = true },
                 existingProducts = products,
                 onPublishProduct = { newProduct, selectedImageUri, onComplete ->
                     if (selectedImageUri != null) {
@@ -487,7 +602,109 @@ fun LocalMarketApp() {
                 }
             )
         }
+
+        if (showAccountDialog) {
+            AccountRegistrationDialog(
+                initialProfile = userProfile,
+                canDismiss = userProfile != null,
+                onDismiss = { showAccountDialog = false },
+                onSave = { name, phone, address ->
+                    persistAccount(name, phone, address)
+                }
+            )
+        }
     }
+}
+
+@Composable
+fun AccountRegistrationDialog(
+    initialProfile: UserProfile?,
+    canDismiss: Boolean,
+    onDismiss: () -> Unit,
+    onSave: (name: String, phone: String, address: String) -> Unit
+) {
+    var name by remember(initialProfile) { mutableStateOf(initialProfile?.name.orEmpty()) }
+    var phone by remember(initialProfile) { mutableStateOf(initialProfile?.phone.orEmpty()) }
+    var address by remember(initialProfile) { mutableStateOf(initialProfile?.address.orEmpty()) }
+    var formError by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = {
+            if (canDismiss) onDismiss()
+        },
+        title = {
+            Text(
+                text = if (initialProfile == null) "تسجيل حساب جديد" else "تعديل بيانات الحساب",
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "أدخل معلوماتك ليتم ربطها بحسابك وتعبئتها تلقائيًا في إعلاناتك.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("الاسم الكامل *") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = phone,
+                    onValueChange = { input -> phone = input.filter { it.isDigit() || it == '+' } },
+                    label = { Text("رقم الهاتف *") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = address,
+                    onValueChange = { address = it },
+                    label = { Text("العنوان / المنطقة *") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                if (formError != null) {
+                    Text(
+                        text = formError!!,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val cleanName = name.trim()
+                    val cleanPhone = phone.trim()
+                    val cleanAddress = address.trim()
+                    if (cleanName.isBlank() || cleanPhone.length < 7 || cleanAddress.isBlank()) {
+                        formError = "يرجى إدخال الاسم ورقم الهاتف والعنوان بشكل صحيح."
+                        return@Button
+                    }
+                    formError = null
+                    onSave(cleanName, cleanPhone, cleanAddress)
+                }
+            ) {
+                Text("حفظ الحساب")
+            }
+        },
+        dismissButton = {
+            if (canDismiss) {
+                TextButton(onClick = onDismiss) {
+                    Text("إلغاء")
+                }
+            }
+        }
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -551,7 +768,10 @@ fun BuyerScreen(
             appendLine("القسم: ${product.category}")
             appendLine("النوع والحالة: ${product.listingType} • ${product.condition}")
             appendLine("السعر: $formattedPrice د.ع")
-            appendLine("المنطقة: ${product.location}")
+            appendLine("المنطقة / العنوان: ${product.location}")
+            if (product.ownerName.isNotBlank()) {
+                appendLine("البائع: ${product.ownerName}")
+            }
             if (product.description.isNotBlank()) {
                 appendLine("التفاصيل: ${product.description}")
             }
@@ -573,7 +793,7 @@ fun BuyerScreen(
         OutlinedTextField(
             value = searchQuery,
             onValueChange = onSearchQueryChange,
-            placeholder = { Text("ابحث عن منتج، منطقة، أو تفاصيل...") },
+            placeholder = { Text("ابحث عن منتج، منطقة، بائع، أو تفاصيل...") },
             leadingIcon = {
                 Icon(
                     imageVector = Icons.Rounded.Search,
@@ -785,6 +1005,15 @@ fun BuyerScreen(
                                     )
                                 }
 
+                                if (product.ownerName.isNotBlank()) {
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = "البائع: ${product.ownerName}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+
                                 if (product.phone.isNotBlank()) {
                                     Spacer(modifier = Modifier.height(10.dp))
                                     Row(
@@ -884,6 +1113,21 @@ fun BuyerScreen(
                         HorizontalDivider()
                     }
 
+                    if (currentDetail.ownerName.isNotBlank()) {
+                        item {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Person,
+                                    contentDescription = "البائع",
+                                    modifier = Modifier.size(18.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("البائع: ${currentDetail.ownerName}", style = MaterialTheme.typography.bodyLarge)
+                            }
+                        }
+                    }
+
                     item {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
@@ -917,12 +1161,12 @@ fun BuyerScreen(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
                                 imageVector = Icons.Rounded.LocationOn,
-                                contentDescription = "المنطقة",
+                                contentDescription = "المنطقة والعنوان",
                                 modifier = Modifier.size(18.dp),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("المنطقة: ${currentDetail.location}", style = MaterialTheme.typography.bodyLarge)
+                            Text("العنوان / المنطقة: ${currentDetail.location}", style = MaterialTheme.typography.bodyLarge)
                         }
                     }
 
@@ -1014,6 +1258,8 @@ fun BuyerScreen(
 fun SellerScreen(
     modifier: Modifier = Modifier,
     categories: List<MarketCategory>,
+    userProfile: UserProfile?,
+    onOpenAccountForm: () -> Unit,
     existingProducts: List<MarketProduct>,
     onPublishProduct: (MarketProduct, Uri?, (Boolean, String?) -> Unit) -> Unit,
     onToggleStatus: (MarketProduct) -> Unit,
@@ -1025,10 +1271,19 @@ fun SellerScreen(
     var listingType by remember { mutableStateOf("بيع") }
     var condition by remember { mutableStateOf("جديد") }
     var priceIqd by remember { mutableStateOf("") }
-    var location by remember { mutableStateOf("") }
-    var phone by remember { mutableStateOf("") }
+    var location by remember { mutableStateOf(userProfile?.address.orEmpty()) }
+    var phone by remember { mutableStateOf(userProfile?.phone.orEmpty()) }
     var description by remember { mutableStateOf("") }
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
+
+    LaunchedEffect(userProfile?.phone, userProfile?.address) {
+        if (!userProfile?.phone.isNullOrBlank()) {
+            phone = userProfile!!.phone
+        }
+        if (!userProfile?.address.isNullOrBlank()) {
+            location = userProfile!!.address
+        }
+    }
 
     var isSubmitting by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
@@ -1079,6 +1334,40 @@ fun SellerScreen(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                )
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = userProfile?.let { "الحساب المرتبط: ${it.name}" } ?: "لم يتم حفظ حسابك بعد",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = userProfile?.let { "${it.phone} • ${it.address}" }
+                                ?: "أدخل اسمك ورقم هاتفك وعنوانك لتعبئة الإعلانات تلقائيًا",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    OutlinedButton(onClick = onOpenAccountForm) {
+                        Text(if (userProfile == null) "تسجيل" else "تعديل")
+                    }
+                }
+            }
+        }
+
         item {
             Text(
                 text = "نشر منتج جديد في السوق المحلي",
@@ -1199,7 +1488,7 @@ fun SellerScreen(
             OutlinedTextField(
                 value = location,
                 onValueChange = { location = it },
-                label = { Text("المنطقة / الحي *") },
+                label = { Text("المنطقة / العنوان *") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -1253,9 +1542,12 @@ fun SellerScreen(
         item {
             Button(
                 onClick = {
-                    if (title.isBlank() || priceIqd.isBlank() || location.isBlank() || phone.isBlank()) {
+                    val effectivePhone = phone.trim().ifBlank { userProfile?.phone.orEmpty() }
+                    val effectiveLocation = location.trim().ifBlank { userProfile?.address.orEmpty() }
+
+                    if (title.isBlank() || priceIqd.isBlank() || effectiveLocation.isBlank() || effectivePhone.isBlank()) {
                         isError = true
-                        statusMessage = "يرجى ملء جميع الحقول المطلوبة (العنوان، السعر، المنطقة، الهاتف)."
+                        statusMessage = "يرجى ملء جميع الحقول المطلوبة (العنوان، السعر، العنوان/المنطقة، الهاتف)."
                         return@Button
                     }
 
@@ -1269,8 +1561,10 @@ fun SellerScreen(
                         listingType = listingType,
                         condition = condition,
                         priceIqd = priceIqd.trim(),
-                        location = location.trim(),
-                        phone = phone.trim(),
+                        location = effectiveLocation,
+                        phone = effectivePhone,
+                        ownerAccountId = userProfile?.accountId.orEmpty(),
+                        ownerName = userProfile?.name.orEmpty(),
                         description = description.trim(),
                         status = "متاح"
                     )
@@ -1280,8 +1574,8 @@ fun SellerScreen(
                         if (success) {
                             title = ""
                             priceIqd = ""
-                            location = ""
-                            phone = ""
+                            location = userProfile?.address.orEmpty()
+                            phone = userProfile?.phone.orEmpty()
                             description = ""
                             selectedImageUri = null
                             statusMessage = "تم نشر المنتج بنجاح!"
