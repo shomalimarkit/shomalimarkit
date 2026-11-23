@@ -1,12 +1,17 @@
 package com.localmarket.app
 
 import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -21,11 +26,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AddBusiness
+import androidx.compose.material.icons.rounded.AddPhotoAlternate
 import androidx.compose.material.icons.rounded.Apps
 import androidx.compose.material.icons.rounded.Call
 import androidx.compose.material.icons.rounded.Category
@@ -35,6 +40,9 @@ import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Checkroom
 import androidx.compose.material.icons.rounded.ChildCare
 import androidx.compose.material.icons.rounded.Clear
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.DirectionsCar
 import androidx.compose.material.icons.rounded.Info
@@ -42,8 +50,12 @@ import androidx.compose.material.icons.rounded.Kitchen
 import androidx.compose.material.icons.rounded.LocationOn
 import androidx.compose.material.icons.rounded.Phone
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Sell
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Storefront
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -61,6 +73,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -73,17 +86,22 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
+import com.google.firebase.storage.FirebaseStorage
 import java.text.NumberFormat
 import java.util.Locale
+import java.util.UUID
 
 data class MarketCategory(
     val id: String,
@@ -100,6 +118,9 @@ data class MarketProduct(
     val priceIqd: String = "",
     val location: String = "",
     val phone: String = "",
+    val description: String = "",
+    val imageUrl: String = "",
+    val status: String = "متاح",
     val createdAt: Long = System.currentTimeMillis()
 )
 
@@ -141,13 +162,17 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LocalMarketApp() {
+    val context = LocalContext.current
     val db = remember { FirebaseFirestore.getInstance() }
+    val storage = remember { FirebaseStorage.getInstance() }
     val products = remember { mutableStateListOf<MarketProduct>() }
     var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
     var selectedTab by remember { mutableStateOf(0) } // 0 = المشتري، 1 = البائع
     var selectedCategory by remember { mutableStateOf("الكل") }
+    var selectedListingType by remember { mutableStateOf("الكل") }
+    var selectedCondition by remember { mutableStateOf("الكل") }
     var searchQuery by remember { mutableStateOf("") }
 
     val categories = remember {
@@ -184,6 +209,9 @@ fun LocalMarketApp() {
                             priceIqd = doc.getString("priceIqd") ?: "",
                             location = doc.getString("location") ?: "",
                             phone = doc.getString("phone") ?: "",
+                            description = doc.getString("description") ?: "",
+                            imageUrl = doc.getString("imageUrl") ?: "",
+                            status = doc.getString("status") ?: "متاح",
                             createdAt = doc.getLong("createdAt") ?: 0L
                         )
                         if (item.title.isNotBlank()) {
@@ -203,11 +231,43 @@ fun LocalMarketApp() {
     val normalizedQuery = searchQuery.trim().lowercase()
     val filteredProducts = products.filter { product ->
         val matchesCategory = selectedCategory == "الكل" || product.category == selectedCategory
+        val matchesListingType = selectedListingType == "الكل" || product.listingType == selectedListingType
+        val matchesCondition = selectedCondition == "الكل" || product.condition == selectedCondition
         val matchesSearch = normalizedQuery.isEmpty() ||
             product.title.lowercase().contains(normalizedQuery) ||
             product.location.lowercase().contains(normalizedQuery) ||
-            product.category.lowercase().contains(normalizedQuery)
-        matchesCategory && matchesSearch
+            product.category.lowercase().contains(normalizedQuery) ||
+            product.listingType.lowercase().contains(normalizedQuery) ||
+            product.condition.lowercase().contains(normalizedQuery) ||
+            product.description.lowercase().contains(normalizedQuery)
+
+        matchesCategory && matchesListingType && matchesCondition && matchesSearch
+    }
+
+    fun saveProductDocument(product: MarketProduct, onComplete: (Boolean, String?) -> Unit) {
+        val data = hashMapOf(
+            "title" to product.title,
+            "category" to product.category,
+            "listingType" to product.listingType,
+            "condition" to product.condition,
+            "priceIqd" to product.priceIqd,
+            "location" to product.location,
+            "phone" to product.phone,
+            "description" to product.description,
+            "imageUrl" to product.imageUrl,
+            "status" to product.status,
+            "createdAt" to System.currentTimeMillis()
+        )
+
+        db.collection("products")
+            .add(data)
+            .addOnSuccessListener {
+                onComplete(true, null)
+                selectedTab = 0
+            }
+            .addOnFailureListener { e ->
+                onComplete(false, e.localizedMessage ?: "فشل حفظ المنتج")
+            }
     }
 
     Scaffold(
@@ -215,7 +275,7 @@ fun LocalMarketApp() {
             TopAppBar(
                 title = {
                     Text(
-                        text = if (selectedTab == 0) "السوق المحلي - تصفح المنتجات" else "السوق المحلي - إضافة منتج",
+                        text = if (selectedTab == 0) "السوق المحلي - تصفح المنتجات" else "السوق المحلي - إدارة ونشر المنتجات",
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -244,8 +304,18 @@ fun LocalMarketApp() {
                 categories = categories,
                 selectedCategory = selectedCategory,
                 onSelectCategory = { selectedCategory = it },
+                selectedListingType = selectedListingType,
+                onSelectListingType = { selectedListingType = it },
+                selectedCondition = selectedCondition,
+                onSelectCondition = { selectedCondition = it },
                 searchQuery = searchQuery,
                 onSearchQueryChange = { searchQuery = it },
+                onResetFilters = {
+                    selectedCategory = "الكل"
+                    selectedListingType = "الكل"
+                    selectedCondition = "الكل"
+                    searchQuery = ""
+                },
                 products = filteredProducts,
                 isLoading = isLoading,
                 errorMessage = errorMessage
@@ -254,26 +324,53 @@ fun LocalMarketApp() {
             1 -> SellerScreen(
                 modifier = Modifier.padding(innerPadding),
                 categories = categories.filter { it.title != "الكل" },
-                onPublishProduct = { newProduct, onComplete ->
-                    val data = hashMapOf(
-                        "title" to newProduct.title,
-                        "category" to newProduct.category,
-                        "listingType" to newProduct.listingType,
-                        "condition" to newProduct.condition,
-                        "priceIqd" to newProduct.priceIqd,
-                        "location" to newProduct.location,
-                        "phone" to newProduct.phone,
-                        "createdAt" to System.currentTimeMillis()
-                    )
+                existingProducts = products,
+                onPublishProduct = { newProduct, selectedImageUri, onComplete ->
+                    if (selectedImageUri != null) {
+                        val fileName = "product_images/${System.currentTimeMillis()}_${UUID.randomUUID()}.jpg"
+                        val imageRef = storage.reference.child(fileName)
 
-                    db.collection("products")
-                        .add(data)
+                        imageRef.putFile(selectedImageUri)
+                            .continueWithTask { task ->
+                                if (!task.isSuccessful) {
+                                    throw task.exception ?: Exception("فشل رفع الصورة")
+                                }
+                                imageRef.downloadUrl
+                            }
+                            .addOnSuccessListener { downloadUri ->
+                                saveProductDocument(
+                                    product = newProduct.copy(imageUrl = downloadUri.toString()),
+                                    onComplete = onComplete
+                                )
+                            }
+                            .addOnFailureListener { e ->
+                                onComplete(false, e.localizedMessage ?: "تعذر رفع صورة المنتج")
+                            }
+                    } else {
+                        saveProductDocument(product = newProduct, onComplete = onComplete)
+                    }
+                },
+                onToggleStatus = { product ->
+                    if (product.id.isBlank()) return@SellerScreen
+                    val nextStatus = if (product.status == "مباع") "متاح" else "مباع"
+                    db.collection("products").document(product.id)
+                        .update("status", nextStatus)
                         .addOnSuccessListener {
-                            onComplete(true, null)
-                            selectedTab = 0
+                            Toast.makeText(context, "تم تحديث الحالة إلى: $nextStatus", Toast.LENGTH_SHORT).show()
                         }
                         .addOnFailureListener { e ->
-                            onComplete(false, e.localizedMessage ?: "فشل حفظ المنتج")
+                            Toast.makeText(context, "تعذر تحديث الحالة: ${e.localizedMessage ?: "خطأ"}", Toast.LENGTH_SHORT).show()
+                        }
+                },
+                onDeleteProduct = { product ->
+                    if (product.id.isBlank()) return@SellerScreen
+                    db.collection("products").document(product.id)
+                        .delete()
+                        .addOnSuccessListener {
+                            Toast.makeText(context, "تم حذف الإعلان", Toast.LENGTH_SHORT).show()
+                        }
+                        .addOnFailureListener { e ->
+                            Toast.makeText(context, "تعذر حذف الإعلان: ${e.localizedMessage ?: "خطأ"}", Toast.LENGTH_SHORT).show()
                         }
                 }
             )
@@ -288,8 +385,13 @@ fun BuyerScreen(
     categories: List<MarketCategory>,
     selectedCategory: String,
     onSelectCategory: (String) -> Unit,
+    selectedListingType: String,
+    onSelectListingType: (String) -> Unit,
+    selectedCondition: String,
+    onSelectCondition: (String) -> Unit,
     searchQuery: String,
     onSearchQueryChange: (String) -> Unit,
+    onResetFilters: () -> Unit,
     products: List<MarketProduct>,
     isLoading: Boolean,
     errorMessage: String?
@@ -297,6 +399,9 @@ fun BuyerScreen(
     val context = LocalContext.current
     var selectedProduct by remember { mutableStateOf<MarketProduct?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    val listingFilterOptions = listOf("الكل", "بيع", "إيجار", "مقايضة")
+    val conditionFilterOptions = listOf("الكل", "جديد", "مستعمل")
 
     fun launchDialer(phone: String) {
         val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$phone"))
@@ -321,13 +426,42 @@ fun BuyerScreen(
         }
     }
 
+    fun copyPhoneNumber(phone: String) {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("رقم البائع", phone))
+        Toast.makeText(context, "تم نسخ رقم الهاتف", Toast.LENGTH_SHORT).show()
+    }
+
+    fun shareProduct(product: MarketProduct, formattedPrice: String) {
+        val shareText = buildString {
+            appendLine("إعلان في السوق المحلي:")
+            appendLine("المنتج: ${product.title}")
+            appendLine("القسم: ${product.category}")
+            appendLine("النوع والحالة: ${product.listingType} •${product.condition}")
+            appendLine("السعر: $formattedPrice د.ع")
+            appendLine("المنطقة: ${product.location}")
+            if (product.description.isNotBlank()) {
+                appendLine("التفاصيل: ${product.description}")
+            }
+            if (product.phone.isNotBlank()) {
+                appendLine("رقم التواصل: ${product.phone}")
+            }
+        }.trim()
+
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, shareText)
+        }
+        context.startActivity(Intent.createChooser(shareIntent, "مشاركة المنتج"))
+    }
+
     Column(
         modifier = modifier.fillMaxSize()
     ) {
         OutlinedTextField(
             value = searchQuery,
             onValueChange = onSearchQueryChange,
-            placeholder = { Text("ابحث عن منتج أو منطقة...") },
+            placeholder = { Text("ابحث عن منتج، منطقة، أو تفاصيل...") },
             leadingIcon = {
                 Icon(
                     imageVector = Icons.Rounded.Search,
@@ -347,11 +481,11 @@ fun BuyerScreen(
             singleLine = true,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .padding(horizontal = 16.dp, vertical = 6.dp)
         )
 
         LazyRow(
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 2.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(categories, key = { it.id }) { category ->
@@ -370,7 +504,27 @@ fun BuyerScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(6.dp))
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(listingFilterOptions) { type ->
+                FilterChip(
+                    selected = selectedListingType == type,
+                    onClick = { onSelectListingType(type) },
+                    label = { Text(if (type == "الكل") "كل العروض" else type) }
+                )
+            }
+            items(conditionFilterOptions) { cond ->
+                FilterChip(
+                    selected = selectedCondition == cond,
+                    onClick = { onSelectCondition(cond) },
+                    label = { Text(if (cond == "الكل") "كل الحالات" else cond) }
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
         HorizontalDivider()
 
         when {
@@ -402,6 +556,11 @@ fun BuyerScreen(
             }
 
             products.isEmpty() -> {
+                val hasActiveFilters = searchQuery.isNotBlank() ||
+                    selectedCategory != "الكل" ||
+                    selectedListingType != "الكل" ||
+                    selectedCondition != "الكل"
+
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
@@ -410,15 +569,21 @@ fun BuyerScreen(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        text = if (searchQuery.isNotBlank()) "لا توجد نتائج مطابقة لبحثك" else "لا توجد منتجات معروضة في هذا القسم حاليًا",
+                        text = if (hasActiveFilters) "لا توجد نتائج مطابقة للفلاتر الحالية" else "لا توجد منتجات معروضة حاليًا",
                         style = MaterialTheme.typography.titleMedium
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = if (searchQuery.isNotBlank()) "جرّب كلمة بحث أخرى أو امسح الفلتر" else "يمكنك الانتقال إلى تبويب البائع لإضافة أول منتج",
+                        text = if (hasActiveFilters) "جرّب تعديل البحث أو إعادة ضبط الفلاتر" else "يمكنك الانتقال إلى تبويب البائع لإضافة أول منتج",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    if (hasActiveFilters) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        OutlinedButton(onClick = onResetFilters) {
+                            Text("إعادة ضبط الفلاتر")
+                        }
+                    }
                 }
             }
 
@@ -430,13 +595,33 @@ fun BuyerScreen(
                 ) {
                     items(products, key = { it.id }) { product ->
                         val formattedPrice = formatIqdPrice(product.priceIqd)
+                        val isSold = product.status == "مباع"
 
                         Card(
                             onClick = { selectedProduct = product },
                             modifier = Modifier.fillMaxWidth(),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isSold)
+                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)
+                                else
+                                    MaterialTheme.colorScheme.surface
+                            )
                         ) {
                             Column(modifier = Modifier.padding(14.dp)) {
+                                if (product.imageUrl.isNotBlank()) {
+                                    AsyncImage(
+                                        model = product.imageUrl,
+                                        contentDescription = product.title,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(175.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                    )
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                }
+
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -450,9 +635,9 @@ fun BuyerScreen(
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = "${product.listingType} • ${product.condition}",
+                                        text = if (isSold) "مباع" else "${product.listingType} •${product.condition}",
                                         style = MaterialTheme.typography.labelLarge,
-                                        color = MaterialTheme.colorScheme.primary
+                                        color = if (isSold) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                                     )
                                 }
 
@@ -536,106 +721,176 @@ fun BuyerScreen(
                 onDismissRequest = { selectedProduct = null },
                 sheetState = sheetState
             ) {
-                Column(
+                LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 20.dp)
-                        .padding(bottom = 28.dp),
+                        .padding(horizontal = 20.dp),
+                    contentPadding = PaddingValues(bottom = 28.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Text(
-                        text = currentDetail.title,
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold
-                    )
-
-                    Text(
-                        text = "السعر: $detailPrice د.ع",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.SemiBold
-                    )
-
-                    HorizontalDivider()
-
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Rounded.Category,
-                            contentDescription = "القسم",
-                            modifier = Modifier.size(18.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("القسم: ${currentDetail.category}", style = MaterialTheme.typography.bodyLarge)
+                    if (currentDetail.imageUrl.isNotBlank()) {
+                        item {
+                            AsyncImage(
+                                model = currentDetail.imageUrl,
+                                contentDescription = currentDetail.title,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(220.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                            )
+                        }
                     }
 
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Rounded.Info,
-                            contentDescription = "نوع العرض والحالة",
-                            modifier = Modifier.size(18.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = currentDetail.title,
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(onClick = { shareProduct(currentDetail, detailPrice) }) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Share,
+                                    contentDescription = "مشاركة المنتج"
+                                )
+                            }
+                        }
+                    }
+
+                    item {
                         Text(
-                            "النوع: ${currentDetail.listingType} • الحالة: ${currentDetail.condition}",
-                            style = MaterialTheme.typography.bodyLarge
+                            text = "السعر: $detailPrice د.ع • الحالة: ${currentDetail.status}",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = if (currentDetail.status == "مباع") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold
                         )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        HorizontalDivider()
                     }
 
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Rounded.LocationOn,
-                            contentDescription = "المنطقة",
-                            modifier = Modifier.size(18.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("المنطقة: ${currentDetail.location}", style = MaterialTheme.typography.bodyLarge)
-                    }
-
-                    if (currentDetail.phone.isNotBlank()) {
+                    item {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
-                                imageVector = Icons.Rounded.Phone,
-                                contentDescription = "رقم الهاتف",
+                                imageVector = Icons.Rounded.Category,
+                                contentDescription = "القسم",
                                 modifier = Modifier.size(18.dp),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("رقم التواصل: ${currentDetail.phone}", style = MaterialTheme.typography.bodyLarge)
+                            Text("القسم: ${currentDetail.category}", style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }
+
+                    item {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Rounded.Info,
+                                contentDescription = "نوع العرض والحالة",
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                "النوع: ${currentDetail.listingType} • الحالة: ${currentDetail.condition}",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                        }
+                    }
+
+                    item {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Rounded.LocationOn,
+                                contentDescription = "المنطقة",
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("المنطقة: ${currentDetail.location}", style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }
+
+                    if (currentDetail.description.isNotBlank()) {
+                        item {
+                            Row(verticalAlignment = Alignment.Top) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Description,
+                                    contentDescription = "الوصف",
+                                    modifier = Modifier.size(18.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "التفاصيل: ${currentDetail.description}",
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                            }
+                        }
+                    }
+
+                    if (currentDetail.phone.isNotBlank()) {
+                        item {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Phone,
+                                        contentDescription = "رقم الهاتف",
+                                        modifier = Modifier.size(18.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("رقم التواصل: ${currentDetail.phone}", style = MaterialTheme.typography.bodyLarge)
+                                }
+                                IconButton(onClick = { copyPhoneNumber(currentDetail.phone) }) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.ContentCopy,
+                                        contentDescription = "نسخ الرقم"
+                                    )
+                                }
+                            }
                         }
 
-                        Spacer(modifier = Modifier.height(6.dp))
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = { launchDialer(currentDetail.phone) },
-                                modifier = Modifier.weight(1f)
+                        item {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Call,
-                                    contentDescription = "اتصال",
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("اتصال")
-                            }
+                                OutlinedButton(
+                                    onClick = { launchDialer(currentDetail.phone) },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Call,
+                                        contentDescription = "اتصال",
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("اتصال")
+                                }
 
-                            Button(
-                                onClick = { launchWhatsApp(currentDetail, detailPrice) },
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Chat,
-                                    contentDescription = "واتساب",
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("واتساب")
+                                Button(
+                                    onClick = { launchWhatsApp(currentDetail, detailPrice) },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Chat,
+                                        contentDescription = "واتساب",
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("واتساب")
+                                }
                             }
                         }
                     }
@@ -649,7 +904,10 @@ fun BuyerScreen(
 fun SellerScreen(
     modifier: Modifier = Modifier,
     categories: List<MarketCategory>,
-    onPublishProduct: (MarketProduct, (Boolean, String?) -> Unit) -> Unit
+    existingProducts: List<MarketProduct>,
+    onPublishProduct: (MarketProduct, Uri?, (Boolean, String?) -> Unit) -> Unit,
+    onToggleStatus: (MarketProduct) -> Unit,
+    onDeleteProduct: (MarketProduct) -> Unit
 ) {
     var title by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf(categories.firstOrNull()?.title ?: "إلكترونيات") }
@@ -658,166 +916,160 @@ fun SellerScreen(
     var priceIqd by remember { mutableStateOf("") }
     var location by remember { mutableStateOf("") }
     var phone by remember { mutableStateOf("") }
+    var description by remember { mutableStateOf("") }
+    var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
 
     var isSubmitting by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
     var isError by remember { mutableStateOf(false) }
+    var productPendingDelete by remember { mutableStateOf<MarketProduct?>(null) }
+
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            selectedImageUri = uri
+        }
+    }
 
     val listingTypes = listOf("بيع", "إيجار", "مقايضة")
     val conditions = listOf("جديد", "مستعمل")
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Text(
-            text = "نشر منتج جديد في السوق المحلي",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold
-        )
-
-        OutlinedTextField(
-            value = title,
-            onValueChange = { title = it },
-            label = { Text("عنوان المنتج") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        Text(text = "اختر القسم", style = MaterialTheme.typography.labelLarge)
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(categories, key = { it.id }) { cat ->
-                FilterChip(
-                    selected = selectedCategory == cat.title,
-                    onClick = { selectedCategory = cat.title },
-                    label = { Text(cat.title) }
-                )
-            }
-        }
-
-        Text(text = "نوع العرض", style = MaterialTheme.typography.labelLarge)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listingTypes.forEach { type ->
-                FilterChip(
-                    selected = listingType == type,
-                    onClick = { listingType = type },
-                    label = { Text(type) }
-                )
-            }
-        }
-
-        Text(text = "حالة المنتج", style = MaterialTheme.typography.labelLarge)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            conditions.forEach { cond ->
-                FilterChip(
-                    selected = condition == cond,
-                    onClick = { condition = cond },
-                    label = { Text(cond) }
-                )
-            }
-        }
-
-        OutlinedTextField(
-            value = priceIqd,
-            onValueChange = { input -> priceIqd = input.filter { it.isDigit() } },
-            label = { Text("السعر بالدينار العراقي (د.ع)") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        OutlinedTextField(
-            value = location,
-            onValueChange = { location = it },
-            label = { Text("المنطقة / الحي") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        OutlinedTextField(
-            value = phone,
-            onValueChange = { input -> phone = input.filter { it.isDigit() || it == '+' } },
-            label = { Text("رقم هاتف التواصل") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        if (statusMessage != null) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                if (!isError) {
-                    Icon(
-                        imageVector = Icons.Rounded.CheckCircle,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-                Text(
-                    text = statusMessage!!,
-                    color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            }
-        }
-
-        Button(
-            onClick = {
-                if (title.isBlank() || priceIqd.isBlank() || location.isBlank() || phone.isBlank()) {
-                    isError = true
-                    statusMessage = "يرجى ملء جميع الحقول المطلوبة (العنوان، السعر، المنطقة، الهاتف)."
-                    return@Button
-                }
-
-                isSubmitting = true
-                isError = false
-                statusMessage = null
-
-                val product = MarketProduct(
-                    title = title.trim(),
-                    category = selectedCategory,
-                    listingType = listingType,
-                    condition = condition,
-                    priceIqd = priceIqd.trim(),
-                    location = location.trim(),
-                    phone = phone.trim()
-                )
-
-                onPublishProduct(product) { success, err ->
-                    isSubmitting = false
-                    if (success) {
-                        title = ""
-                        priceIqd = ""
-                        location = ""
-                        phone = ""
-                        statusMessage = "تم نشر المنتج بنجاح!"
-                        isError = false
-                    } else {
-                        statusMessage = err ?: "حدث خطأ أثناء النشر."
-                        isError = true
+    if (productPendingDelete != null) {
+        val target = productPendingDelete!!
+        AlertDialog(
+            onDismissRequest = { productPendingDelete = null },
+            title = { Text("تأكيد حذف الإعلان") },
+            text = { Text("هل تريد حذف \"${target.title}\" نهائيًا من السوق المحلي؟") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onDeleteProduct(target)
+                        productPendingDelete = null
                     }
+                ) {
+                    Text("حذف", color = MaterialTheme.colorScheme.error)
                 }
             },
-            enabled = !isSubmitting,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(50.dp)
-        ) {
-            if (isSubmitting) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(22.dp),
-                    strokeWidth = 2.dp,
-                    color = MaterialTheme.colorScheme.onPrimary
-                )
-            } else {
-                Text("نشر المنتج في السوق")
+            dismissButton = {
+                TextButton(onClick = { productPendingDelete = null }) {
+                    Text("إلغاء")
+                }
+            }
+        )
+    }
+
+    LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item {
+            Text(
+                text = "نشر منتج جديد في السوق المحلي",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (selectedImageUri != null) {
+                    AsyncImage(
+                        model = selectedImageUri,
+                        contentDescription = "معاينة صورة المنتج",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(180.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { imagePickerLauncher.launch("image/*") },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.AddPhotoAlternate,
+                            contentDescription = "اختيار صورة",
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(if (selectedImageUri == null) "إضافة صورة للمنتج" else "تغيير الصورة")
+                    }
+
+                    if (selectedImageUri != null) {
+                        OutlinedButton(
+                            onClick = { selectedImageUri = null },
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error
+                            )
+                        ) {
+                            Text("إزالة")
+                        }
+                    }
+                }
             }
         }
-    }
-}
+
+        item {
+            OutlinedTextField(
+                value = title,
+                onValueChange = { title = it },
+                label = { Text("عنوان المنتج *") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        item {
+            Text(text = "اختر القسم", style = MaterialTheme.typography.labelLarge)
+            Spacer(modifier = Modifier.height(4.dp))
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(categories, key = { it.id }) { cat ->
+                    FilterChip(
+                        selected = selectedCategory == cat.title,
+                        onClick = { selectedCategory = cat.title },
+                        label = { Text(cat.title) }
+                    )
+                }
+            }
+        }
+
+        item {
+            Text(text = "نوع العرض", style = MaterialTheme.typography.labelLarge)
+            Spacer(modifier = Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listingTypes.forEach { type ->
+                    FilterChip(
+                        selected = listingType == type,
+                        onClick = { listingType = type },
+                        label = { Text(type) }
+                    )
+                }
+            }
+        }
+
+        item {
+            Text(text = "حالة المنتج", style = MaterialTheme.typography.labelLarge)
+            Spacer(modifier = Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                conditions.forEach { cond ->
+                    FilterChip(
+                        selected = condition == cond,
+                        onClick = { condition = cond },
+                        label = { Text(cond) }
+                    )
+                }
+            }
+        }
+
+        item {
+            OutlinedTextField(
+                value = priceIqd,
+                onValueChange = { input -> priceIqd = input.filter { it.is
