@@ -5,8 +5,11 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
+import android.util.Base64
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -83,6 +86,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -98,10 +102,13 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
-import com.google.firebase.storage.FirebaseStorage
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.text.NumberFormat
 import java.util.Locale
-import java.util.UUID
+import kotlin.math.max
 
 data class MarketCategory(
     val id: String,
@@ -119,7 +126,7 @@ data class MarketProduct(
     val location: String = "",
     val phone: String = "",
     val description: String = "",
-    val imageUrl: String = "",
+    val imageData: String = "",
     val status: String = "متاح",
     val createdAt: Long = System.currentTimeMillis()
 )
@@ -139,6 +146,124 @@ private fun formatIqdPrice(rawPrice: String): String {
     val amount = digitsOnly.toLongOrNull() ?: return rawPrice.trim()
     val formatter = NumberFormat.getNumberInstance(Locale.US)
     return formatter.format(amount)
+}
+
+private fun decodeBase64ToBitmap(base64String: String): Bitmap? {
+    if (base64String.isBlank()) return null
+    return try {
+        val cleanBase64 = if (base64String.contains(",")) {
+            base64String.substringAfter(",")
+        } else {
+            base64String
+        }
+        val decodedBytes = Base64.decode(cleanBase64, Base64.DEFAULT)
+        BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+    } catch (_: Exception) {
+        null
+    }
+}
+
+private suspend fun compressImageToBase64(
+    context: Context,
+    imageUri: Uri,
+    maxDimension: Int = 800,
+    initialQuality: Int = 70
+): Result<String> = withContext(Dispatchers.IO) {
+    try {
+        val boundsOptions = BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        context.contentResolver.openInputStream(imageUri)?.use { input ->
+            BitmapFactory.decodeStream(input, null, boundsOptions)
+        }
+
+        val width = boundsOptions.outWidth
+        val height = boundsOptions.outHeight
+        if (width <= 0 || height <= 0) {
+            return@withContext Result.failure(IllegalStateException("تعذر قراءة أبعاد الصورة المختارة."))
+        }
+
+        var sampleSize = 1
+        while (max(width / sampleSize, height / sampleSize) > maxDimension * 2) {
+            sampleSize *= 2
+        }
+
+        val decodeOptions = BitmapFactory.Options().apply {
+            inSampleSize = sampleSize
+        }
+        val rawBitmap = context.contentResolver.openInputStream(imageUri)?.use { input ->
+            BitmapFactory.decodeStream(input, null, decodeOptions)
+        } ?: return@withContext Result.failure(IllegalStateException("تعذر فك تشفير الصورة."))
+
+        val longestSide = max(rawBitmap.width, rawBitmap.height)
+        val scaledBitmap = if (longestSide > maxDimension) {
+            val scaleRatio = maxDimension.toFloat() / longestSide.toFloat()
+            val targetWidth = (rawBitmap.width * scaleRatio).toInt().coerceAtLeast(1)
+            val targetHeight = (rawBitmap.height * scaleRatio).toInt().coerceAtLeast(1)
+            Bitmap.createScaledBitmap(rawBitmap, targetWidth, targetHeight, true)
+        } else {
+            rawBitmap
+        }
+
+        var quality = initialQuality
+        var outputStream = ByteArrayOutputStream()
+        scaledBitmap.compress(Bitmap.CompressFormat.JPEG, quality, outputStream)
+
+        // ضمان عدم تجاوز حجم النص المسموح في مستند Firestore (~350 KB للبيانات النصية)
+        while (outputStream.size() > 350_000 && quality > 25) {
+            quality -= 10
+            outputStream = ByteArrayOutputStream()
+            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, quality, outputStream)
+        }
+
+        if (scaledBitmap !== rawBitmap) {
+            rawBitmap.recycle()
+        }
+        scaledBitmap.recycle()
+
+        val bytes = outputStream.toByteArray()
+        if (bytes.isEmpty()) {
+            return@withContext Result.failure(IllegalStateException("فشل ضغط الصورة."))
+        }
+
+        val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
+        Result.success(encoded)
+    } catch (e: Exception) {
+        Result.failure(e)
+    }
+}
+
+@Composable
+fun ProductImageView(
+    imageData: String,
+    contentDescription: String,
+    modifier: Modifier = Modifier
+) {
+    if (imageData.isBlank()) return
+
+    val bitmap = remember(imageData) {
+        if (imageData.startsWith("http://") || imageData.startsWith("https://")) {
+            null
+        } else {
+            decodeBase64ToBitmap(imageData)
+        }
+    }
+
+    if (imageData.startsWith("http://") || imageData.startsWith("https://")) {
+        AsyncImage(
+            model = imageData,
+            contentDescription = contentDescription,
+            contentScale = ContentScale.Crop,
+            modifier = modifier
+        )
+    } else if (bitmap != null) {
+        AsyncImage(
+            model = bitmap,
+            contentDescription = contentDescription,
+            contentScale = ContentScale.Crop,
+            modifier = modifier
+        )
+    }
 }
 
 class MainActivity : ComponentActivity() {
@@ -163,8 +288,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun LocalMarketApp() {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     val db = remember { FirebaseFirestore.getInstance() }
-    val storage = remember { FirebaseStorage.getInstance() }
     val products = remember { mutableStateListOf<MarketProduct>() }
     var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -200,6 +325,10 @@ fun LocalMarketApp() {
                 if (snapshot != null) {
                     products.clear()
                     for (doc in snapshot.documents) {
+                        val storedImage = doc.getString("imageData")
+                            ?: doc.getString("imageUrl")
+                            ?: ""
+
                         val item = MarketProduct(
                             id = doc.id,
                             title = doc.getString("title") ?: "",
@@ -210,7 +339,7 @@ fun LocalMarketApp() {
                             location = doc.getString("location") ?: "",
                             phone = doc.getString("phone") ?: "",
                             description = doc.getString("description") ?: "",
-                            imageUrl = doc.getString("imageUrl") ?: "",
+                            imageData = storedImage,
                             status = doc.getString("status") ?: "متاح",
                             createdAt = doc.getLong("createdAt") ?: 0L
                         )
@@ -254,7 +383,7 @@ fun LocalMarketApp() {
             "location" to product.location,
             "phone" to product.phone,
             "description" to product.description,
-            "imageUrl" to product.imageUrl,
+            "imageData" to product.imageData,
             "status" to product.status,
             "createdAt" to System.currentTimeMillis()
         )
@@ -327,25 +456,20 @@ fun LocalMarketApp() {
                 existingProducts = products,
                 onPublishProduct = { newProduct, selectedImageUri, onComplete ->
                     if (selectedImageUri != null) {
-                        val fileName = "product_images/${System.currentTimeMillis()}_${UUID.randomUUID()}.jpg"
-                        val imageRef = storage.reference.child(fileName)
-
-                        imageRef.putFile(selectedImageUri)
-                            .continueWithTask { task ->
-                                if (!task.isSuccessful) {
-                                    throw task.exception ?: Exception("فشل رفع الصورة")
+                        coroutineScope.launch {
+                            val compressResult = compressImageToBase64(context, selectedImageUri)
+                            compressResult.fold(
+                                onSuccess = { encodedImage ->
+                                    saveProductDocument(
+                                        product = newProduct.copy(imageData = encodedImage),
+                                        onComplete = onComplete
+                                    )
+                                },
+                                onFailure = { err ->
+                                    onComplete(false, err.localizedMessage ?: "تعذر تجهيز صورة المنتج")
                                 }
-                                imageRef.downloadUrl
-                            }
-                            .addOnSuccessListener { downloadUri ->
-                                saveProductDocument(
-                                    product = newProduct.copy(imageUrl = downloadUri.toString()),
-                                    onComplete = onComplete
-                                )
-                            }
-                            .addOnFailureListener { e ->
-                                onComplete(false, e.localizedMessage ?: "تعذر رفع صورة المنتج")
-                            }
+                            )
+                        }
                     } else {
                         saveProductDocument(product = newProduct, onComplete = onComplete)
                     }
@@ -437,7 +561,7 @@ fun BuyerScreen(
             appendLine("إعلان في السوق المحلي:")
             appendLine("المنتج: ${product.title}")
             appendLine("القسم: ${product.category}")
-            appendLine("النوع والحالة: ${product.listingType} •${product.condition}")
+            appendLine("النوع والحالة: ${product.listingType} • ${product.condition}")
             appendLine("السعر: $formattedPrice د.ع")
             appendLine("المنطقة: ${product.location}")
             if (product.description.isNotBlank()) {
@@ -609,11 +733,10 @@ fun BuyerScreen(
                             )
                         ) {
                             Column(modifier = Modifier.padding(14.dp)) {
-                                if (product.imageUrl.isNotBlank()) {
-                                    AsyncImage(
-                                        model = product.imageUrl,
+                                if (product.imageData.isNotBlank()) {
+                                    ProductImageView(
+                                        imageData = product.imageData,
                                         contentDescription = product.title,
-                                        contentScale = ContentScale.Crop,
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .height(175.dp)
@@ -635,7 +758,7 @@ fun BuyerScreen(
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = if (isSold) "مباع" else "${product.listingType} •${product.condition}",
+                                        text = if (isSold) "مباع" else "${product.listingType} • ${product.condition}",
                                         style = MaterialTheme.typography.labelLarge,
                                         color = if (isSold) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                                     )
@@ -728,12 +851,11 @@ fun BuyerScreen(
                     contentPadding = PaddingValues(bottom = 28.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    if (currentDetail.imageUrl.isNotBlank()) {
+                    if (currentDetail.imageData.isNotBlank()) {
                         item {
-                            AsyncImage(
-                                model = currentDetail.imageUrl,
+                            ProductImageView(
+                                imageData = currentDetail.imageData,
                                 contentDescription = currentDetail.title,
-                                contentScale = ContentScale.Crop,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(220.dp)
@@ -1072,4 +1194,211 @@ fun SellerScreen(
         item {
             OutlinedTextField(
                 value = priceIqd,
-                onValueChange = { input -> priceIqd = input.filter { it.is
+                onValueChange = { input -> priceIqd = input.filter { it.isDigit() } },
+                label = { Text("السعر بالدينار العراقي (د.ع) *") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        item {
+            OutlinedTextField(
+                value = location,
+                onValueChange = { location = it },
+                label = { Text("المنطقة / الحي *") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        item {
+            OutlinedTextField(
+                value = phone,
+                onValueChange = { input -> phone = input.filter { it.isDigit() || it == '+' } },
+                label = { Text("رقم هاتف التواصل *") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        item {
+            OutlinedTextField(
+                value = description,
+                onValueChange = { description = it },
+                label = { Text("تفاصيل إضافية (اختياري)") },
+                minLines = 2,
+                maxLines = 4,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        if (statusMessage != null) {
+            item {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (!isError) {
+                        Icon(
+                            imageVector = Icons.Rounded.CheckCircle,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    Text(
+                        text = statusMessage!!,
+                        color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+        }
+
+        item {
+            Button(
+                onClick = {
+                    if (title.isBlank() || priceIqd.isBlank() || location.isBlank() || phone.isBlank()) {
+                        isError = true
+                        statusMessage = "يرجى ملء جميع الحقول المطلوبة (العنوان، السعر، المنطقة، الهاتف)."
+                        return@Button
+                    }
+
+                    isSubmitting = true
+                    isError = false
+                    statusMessage = null
+
+                    val product = MarketProduct(
+                        title = title.trim(),
+                        category = selectedCategory,
+                        listingType = listingType,
+                        condition = condition,
+                        priceIqd = priceIqd.trim(),
+                        location = location.trim(),
+                        phone = phone.trim(),
+                        description = description.trim(),
+                        status = "متاح"
+                    )
+
+                    onPublishProduct(product, selectedImageUri) { success, err ->
+                        isSubmitting = false
+                        if (success) {
+                            title = ""
+                            priceIqd = ""
+                            location = ""
+                            phone = ""
+                            description = ""
+                            selectedImageUri = null
+                            statusMessage = "تم نشر المنتج بنجاح!"
+                            isError = false
+                        } else {
+                            statusMessage = err ?: "حدث خطأ أثناء النشر."
+                            isError = true
+                        }
+                    }
+                },
+                enabled = !isSubmitting,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp)
+            ) {
+                if (isSubmitting) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(22.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                } else {
+                    Text("نشر المنتج في السوق")
+                }
+            }
+        }
+
+        if (existingProducts.isNotEmpty()) {
+            item {
+                Spacer(modifier = Modifier.height(8.dp))
+                HorizontalDivider()
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "إدارة الإعلانات المنشورة (${existingProducts.size})",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            items(existingProducts, key = { it.id }) { item ->
+                val isSold = item.status == "مباع"
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = item.title,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                text = item.status,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (isSold) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        Text(
+                            text = "${formatIqdPrice(item.priceIqd)} د.ع • ${item.category} • ${item.location}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { onToggleStatus(item) },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Sell,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(if (isSold) "إعادة كمتاح" else "تعليم كمباع")
+                            }
+
+                            OutlinedButton(
+                                onClick = { productPendingDelete = item },
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.error
+                                ),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.DeleteOutline,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("حذف")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
