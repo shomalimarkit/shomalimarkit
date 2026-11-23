@@ -1,8 +1,10 @@
 package com.localmarket.app
 
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
@@ -27,13 +29,16 @@ import androidx.compose.material.icons.rounded.AddBusiness
 import androidx.compose.material.icons.rounded.Apps
 import androidx.compose.material.icons.rounded.Call
 import androidx.compose.material.icons.rounded.Chair
+import androidx.compose.material.icons.rounded.Chat
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Checkroom
 import androidx.compose.material.icons.rounded.ChildCare
+import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.DirectionsCar
 import androidx.compose.material.icons.rounded.Kitchen
 import androidx.compose.material.icons.rounded.LocationOn
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Storefront
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -43,6 +48,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -90,6 +96,16 @@ data class MarketProduct(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+private fun formatIraqiWhatsAppNumber(rawPhone: String): String {
+    val digitsOnly = rawPhone.filter { it.isDigit() }
+    return when {
+        digitsOnly.startsWith("964") -> digitsOnly
+        digitsOnly.startsWith("0") -> "964" + digitsOnly.drop(1)
+        digitsOnly.isNotEmpty() -> "964$digitsOnly"
+        else -> ""
+    }
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -118,6 +134,7 @@ fun LocalMarketApp() {
 
     var selectedTab by remember { mutableStateOf(0) } // 0 = المشتري، 1 = البائع
     var selectedCategory by remember { mutableStateOf("الكل") }
+    var searchQuery by remember { mutableStateOf("") }
 
     val categories = remember {
         listOf(
@@ -169,6 +186,16 @@ fun LocalMarketApp() {
         }
     }
 
+    val normalizedQuery = searchQuery.trim().lowercase()
+    val filteredProducts = products.filter { product ->
+        val matchesCategory = selectedCategory == "الكل" || product.category == selectedCategory
+        val matchesSearch = normalizedQuery.isEmpty() ||
+            product.title.lowercase().contains(normalizedQuery) ||
+            product.location.lowercase().contains(normalizedQuery) ||
+            product.category.lowercase().contains(normalizedQuery)
+        matchesCategory && matchesSearch
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -203,9 +230,9 @@ fun LocalMarketApp() {
                 categories = categories,
                 selectedCategory = selectedCategory,
                 onSelectCategory = { selectedCategory = it },
-                products = products.filter {
-                    selectedCategory == "الكل" || it.category == selectedCategory
-                },
+                searchQuery = searchQuery,
+                onSearchQueryChange = { searchQuery = it },
+                products = filteredProducts,
                 isLoading = isLoading,
                 errorMessage = errorMessage
             )
@@ -246,6 +273,8 @@ fun BuyerScreen(
     categories: List<MarketCategory>,
     selectedCategory: String,
     onSelectCategory: (String) -> Unit,
+    searchQuery: String,
+    onSearchQueryChange: (String) -> Unit,
     products: List<MarketProduct>,
     isLoading: Boolean,
     errorMessage: String?
@@ -255,8 +284,34 @@ fun BuyerScreen(
     Column(
         modifier = modifier.fillMaxSize()
     ) {
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = onSearchQueryChange,
+            placeholder = { Text("ابحث عن منتج أو منطقة...") },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Rounded.Search,
+                    contentDescription = "بحث"
+                )
+            },
+            trailingIcon = {
+                if (searchQuery.isNotEmpty()) {
+                    IconButton(onClick = { onSearchQueryChange("") }) {
+                        Icon(
+                            imageVector = Icons.Rounded.Clear,
+                            contentDescription = "مسح البحث"
+                        )
+                    }
+                }
+            },
+            singleLine = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+        )
+
         LazyRow(
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(categories, key = { it.id }) { category ->
@@ -275,6 +330,7 @@ fun BuyerScreen(
             }
         }
 
+        Spacer(modifier = Modifier.height(6.dp))
         HorizontalDivider()
 
         when {
@@ -314,12 +370,12 @@ fun BuyerScreen(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        text = "لا توجد منتجات معروضة في هذا القسم حاليًا",
+                        text = if (searchQuery.isNotBlank()) "لا توجد نتائج مطابقة لبحثك" else "لا توجد منتجات معروضة في هذا القسم حاليًا",
                         style = MaterialTheme.typography.titleMedium
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "يمكنك الانتقال إلى تبويب البائع لإضافة أول منتج",
+                        text = if (searchQuery.isNotBlank()) "جرّب كلمة بحث أخرى أو امسح الفلتر" else "يمكنك الانتقال إلى تبويب البائع لإضافة أول منتج",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -392,23 +448,57 @@ fun BuyerScreen(
 
                                 if (product.phone.isNotBlank()) {
                                     Spacer(modifier = Modifier.height(10.dp))
-                                    OutlinedButton(
-                                        onClick = {
-                                            val dialIntent = Intent(
-                                                Intent.ACTION_DIAL,
-                                                Uri.parse("tel:${product.phone}")
-                                            )
-                                            context.startActivity(dialIntent)
-                                        },
-                                        modifier = Modifier.fillMaxWidth()
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Rounded.Call,
-                                            contentDescription = "اتصال بالبائع",
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("اتصال بالبائع (${product.phone})")
+                                        OutlinedButton(
+                                            onClick = {
+                                                val dialIntent = Intent(
+                                                    Intent.ACTION_DIAL,
+                                                    Uri.parse("tel:${product.phone}")
+                                                )
+                                                context.startActivity(dialIntent)
+                                            },
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Call,
+                                                contentDescription = "اتصال بالبائع",
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("اتصال")
+                                        }
+
+                                        Button(
+                                            onClick = {
+                                                val waNumber = formatIraqiWhatsAppNumber(product.phone)
+                                                if (waNumber.isBlank()) {
+                                                    Toast.makeText(context, "رقم الهاتف غير صالح لواتساب", Toast.LENGTH_SHORT).show()
+                                                    return@Button
+                                                }
+                                                val message = Uri.encode("مرحبًا، أستفسر عن منتج: ${product.title} (${product.priceIqd} د.ع)")
+                                                val waIntent = Intent(
+                                                    Intent.ACTION_VIEW,
+                                                    Uri.parse("https://wa.me/$waNumber?text=$message")
+                                                )
+                                                try {
+                                                    context.startActivity(waIntent)
+                                                } catch (_: ActivityNotFoundException) {
+                                                    Toast.makeText(context, "تعذر فتح واتساب على الجهاز", Toast.LENGTH_SHORT).show()
+                                                }
+                                            },
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Chat,
+                                                contentDescription = "واتساب",
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("واتساب")
+                                        }
                                     }
                                 }
                             }
