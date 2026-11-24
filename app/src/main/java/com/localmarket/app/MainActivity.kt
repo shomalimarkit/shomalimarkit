@@ -306,6 +306,19 @@ private fun decodeBase64ToBitmap(base64String: String): Bitmap? {
     }
 }
 
+private fun loadBrandLogoBitmap(context: Context): Bitmap? {
+    return try {
+        val drawableId = context.resources.getIdentifier("logo_shomali", "drawable", context.packageName)
+        if (drawableId != 0) {
+            BitmapFactory.decodeResource(context.resources, drawableId)
+        } else {
+            null
+        }
+    } catch (_: Exception) {
+        null
+    }
+}
+
 private suspend fun compressImageToBase64(
     context: Context,
     imageUri: Uri,
@@ -337,6 +350,40 @@ private suspend fun compressImageToBase64(
         Result.success(encoded)
     } catch (e: Exception) {
         Result.failure(e)
+    }
+}
+
+@Composable
+fun BrandLogoBadge(
+    modifier: Modifier = Modifier,
+    sizeDp: Int = 44
+) {
+    val context = LocalContext.current
+    val logoBitmap = remember(context) { loadBrandLogoBitmap(context) }
+
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = Color(0xFF3B4232),
+        border = BorderStroke(1.dp, Color(0xFFC97A16).copy(alpha = 0.65f)),
+        modifier = modifier.size(sizeDp.dp)
+    ) {
+        if (logoBitmap != null) {
+            Image(
+                bitmap = logoBitmap.asImageBitmap(),
+                contentDescription = "شعار سوق الشوملي",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                Icon(
+                    imageVector = Icons.Rounded.Storefront,
+                    contentDescription = "سوق الشوملي",
+                    tint = Color(0xFFC97A16),
+                    modifier = Modifier.size((sizeDp * 0.55f).dp)
+                )
+            }
+        }
     }
 }
 
@@ -541,19 +588,25 @@ fun LocalMarketApp() {
                     titleContentColor = MaterialTheme.colorScheme.onSurface
                 ),
                 title = {
-                    Column {
-                        Text(
-                            text = if (selectedTab == 0) "السوق المحلي" else "إدارة ونشر المنتجات",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = userProfile?.let { "${it.name} • ${it.phone} • ${it.address}" }
-                                ?: "سجّل حسابك (الاسم، الهاتف، العنوان)",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1
-                        )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        BrandLogoBadge(sizeDp = 42)
+                        Column {
+                            Text(
+                                text = if (selectedTab == 0) "سوق الشوملي" else "سوق الشوملي • إدارة المنتجات",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = userProfile?.let { "${it.name} • ${it.phone} • ${it.address}" }
+                                    ?: "سجّل حسابك (الاسم، الهاتف، العنوان)",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1
+                            )
+                        }
                     }
                 },
                 actions = {
@@ -742,25 +795,19 @@ fun AccountRegistrationDialog(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    modifier = Modifier.size(38.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Rounded.Person,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
+                BrandLogoBadge(sizeDp = 42)
+                Column {
+                    Text(
+                        text = if (initialProfile == null) "مرحبًا بك في سوق الشوملي" else "تعديل بيانات الحساب",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = if (initialProfile == null) "تسجيل حساب جديد" else "حسابك في سوق الشوملي",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
-                Text(
-                    text = if (initialProfile == null) "تسجيل حساب جديد" else "تعديل بيانات الحساب",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
             }
         },
         text = {
@@ -872,7 +919,7 @@ fun BuyerScreen(
             Toast.makeText(context, "رقم الهاتف غير صالح لواتساب", Toast.LENGTH_SHORT).show()
             return
         }
-        val message = Uri.encode("مرحبًا، أستفسر عن منتج: ${product.title} ($formattedPrice د.ع)")
+        val message = Uri.encode("مرحبًا، أستفسر عن منتج في سوق الشوملي: ${product.title} ($formattedPrice د.ع)")
         val waIntent = Intent(
             Intent.ACTION_VIEW,
             Uri.parse("https://wa.me/$waNumber?text=$message")
@@ -892,7 +939,7 @@ fun BuyerScreen(
 
     fun shareProduct(product: MarketProduct, formattedPrice: String) {
         val shareText = buildString {
-            appendLine("إعلان في السوق المحلي:")
+            appendLine("إعلان في سوق الشوملي:")
             appendLine("المنتج: ${product.title}")
             appendLine("القسم: ${product.category}")
             appendLine("النوع والحالة: ${product.listingType} • ${product.condition}")
@@ -1529,7 +1576,7 @@ fun SellerScreen(
             onDismissRequest = { productPendingDelete = null },
             shape = RoundedCornerShape(20.dp),
             title = { Text("تأكيد حذف الإعلان") },
-            text = { Text("هل تريد حذف \"${target.title}\" نهائيًا من السوق المحلي؟") },
+            text = { Text("هل تريد حذف \"${target.title}\" نهائيًا من سوق الشوملي؟") },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -1610,7 +1657,7 @@ fun SellerScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text(
-                        text = "نشر منتج جديد في السوق المحلي",
+                        text = "نشر منتج جديد في سوق الشوملي",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
